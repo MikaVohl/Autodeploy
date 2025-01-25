@@ -21,7 +21,6 @@ def main():
     # provider = deployment_instructions.get('cloud_provider') or "aws"
     # app_type = deployment_instructions.get('application_type') or "unknown"
     # resource_size = deployment_instructions.get('resource_size') or "t2.micro"
-    # other_requirements = deployment_instructions.get('other_requirements', [])
     provider = "aws"
     app_type = "flask"
     resource_size = "t2.micro"

@@ -320,6 +320,12 @@ def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool
 
         sftp.close()
 
+        # Now install dependencies and start the app, depending on the framework
+        print("[INFO] Checking for requirements.txt...")
+        stdin, stdout, stderr = ssh.exec_command(f"test -f /home/{username}/app/app/requirements.txt && echo 'YES' || echo 'NO'")
+        has_requirements = stdout.read().decode().strip()
+        print(f"[INFO] requirements.txt present: {has_requirements}")
+
         # Check if pip is installed with retries
         max_retries = 3
         retry_delay = 5

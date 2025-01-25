@@ -8,7 +8,6 @@ The JSON object must contain these fields:
 cloud_provider (e.g., "aws", "gcp", "azure")
 application_type (e.g., "flask", "django", "nodejs")
 resource_size (optional, for instance type or VM size)
-other_requirements (array of any additional instructions, if relevant)
 Important:
 
 Do not include any extra commentary, explanations, or markdown.
@@ -16,13 +15,12 @@ Make sure your JSON is valid and properly formatted (use double quotes around st
 If you’re not sure about a particular field, return a sensible default or a null value.
 
 **Example**:
-User: "Hey, please deploy my Node.js app on a small AWS EC2 instance."
+User: "Hey, please deploy my Node.js app on an AWS EC2 instance."
 Ideal JSON:
 {
   "cloud_provider": "aws",
   "application_type": "nodejs",
   "resource_size": "small",
-  "other_requirements": []
 }
 """
 
@@ -48,4 +46,4 @@ def process_deployment_request(user_text: str) -> dict:
         return json.loads(output_text)
     except json.JSONDecodeError:
         # Fallback if GPT doesn't return valid JSON
-        return {"cloud_provider": "aws", "application_type": None, "resource_size": None, "other_requirements": []}
+        return {"cloud_provider": "aws", "application_type": None, "resource_size": None}
