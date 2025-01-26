@@ -34,6 +34,8 @@ def main():
         print(f"[ERROR] Failed to retrieve code: {e}")
         return
 
+    if zip_file_path:
+        code_path = "/".join(code_path.split("/")[:-1])
     repo_analysis = analyze_repo(code_path, root_dir, tree, known_framework=app_type)
     print("[DEBUG] Repo Analysis:", repo_analysis)
 

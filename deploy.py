@@ -12,7 +12,6 @@ from chatbot import get_repo_structure
 def download_or_extract_code(repo_url: str = None, zip_file_path: str = None) -> tuple[str, str, str]:
     temp_dir = tempfile.mkdtemp(prefix="app_code_")
 
-    print(repo_url)
     if repo_url and repo_url != "":
         print(f"[INFO] Cloning repo from {repo_url} to {temp_dir}...")
         subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
@@ -25,19 +24,11 @@ def download_or_extract_code(repo_url: str = None, zip_file_path: str = None) ->
     if zip_file_path and zip_file_path != "":
         print(f"[INFO] Extracting zip file from {zip_file_path} to {temp_dir}...")
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            # Get the root folder name from the first item in the zipfile
+            first_item = zip_ref.namelist()[0]
+            root_folder = first_item.split('/')[0]
             zip_ref.extractall(temp_dir)
-
-        # After extraction, see if there's exactly one directory at the top level
-        top_items = os.listdir(temp_dir)
-        if len(top_items) == 1:
-            possible_root = os.path.join(temp_dir, top_items[0])
-            if os.path.isdir(possible_root):
-                # This single directory is likely the real project root
-                return possible_root, top_items[0], tree(possible_root)
-
-        # Otherwise, multiple items or a single file exist
-        # Just treat temp_dir as the project root, with no named subfolder
-        return temp_dir, "", tree(temp_dir)
+        return temp_dir, repo_name, tree(temp_dir)
 
     return temp_dir, "", tree(temp_dir)
 
@@ -68,8 +59,7 @@ def analyze_repo(repo_path: str, repo_name: str, tree: str, known_framework: str
     # Very naive check for 'localhost' references
     # Only check for localhost references in main file
     if results["main_file_path"]:
-        main_file_fullpath = os.path.join(repo_path, repo_name, results["main_file_path"])
-        with open(main_file_fullpath, "r", encoding="utf-8", errors="ignore") as code_file:
+        with open(os.path.join(repo_path, results["main_file_path"]), "r", encoding="utf-8", errors="ignore") as code_file:
             code_text = code_file.read()
             if "localhost" in code_text or "127.0.0.1" in code_text:
                 results["needs_localhost_replacement"] = True
