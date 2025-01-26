@@ -6,63 +6,73 @@ import re
 import paramiko
 from io import StringIO
 import time
+from chatbot import get_repo_structure
 
 
-def download_or_extract_code(repo_url: str = None, zip_file_path: str = None) -> str:
+def download_or_extract_code(repo_url: str = None, zip_file_path: str = None) -> tuple[str, str, str]:
     temp_dir = tempfile.mkdtemp(prefix="app_code_")
 
-    if repo_url:
+    print(repo_url)
+    if repo_url and repo_url != "":
         print(f"[INFO] Cloning repo from {repo_url} to {temp_dir}...")
         subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
-        return temp_dir
+        # Get the repo name from the URL
+        repo_name = repo_url.rstrip('/').split('/')[-1]
+        if repo_name.endswith('.git'):
+            repo_name = repo_name[:-4]
+        return temp_dir, repo_name, tree(temp_dir)
 
-    if zip_file_path:
+    if zip_file_path and zip_file_path != "":
         print(f"[INFO] Extracting zip file from {zip_file_path} to {temp_dir}...")
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
-        return temp_dir
 
-    return temp_dir
+        # After extraction, see if there's exactly one directory at the top level
+        top_items = os.listdir(temp_dir)
+        if len(top_items) == 1:
+            possible_root = os.path.join(temp_dir, top_items[0])
+            if os.path.isdir(possible_root):
+                # This single directory is likely the real project root
+                return possible_root, top_items[0], tree(possible_root)
+
+        # Otherwise, multiple items or a single file exist
+        # Just treat temp_dir as the project root, with no named subfolder
+        return temp_dir, "", tree(temp_dir)
+
+    return temp_dir, "", tree(temp_dir)
 
 
-def analyze_repo(repo_path: str, known_framework: str = None) -> dict:
+def analyze_repo(repo_path: str, repo_name: str, tree: str, known_framework: str = None) -> dict:
+    repo_structure = get_repo_structure(repo_name, tree, known_framework)
     results = {
         "framework": known_framework or "unknown",
         "ports": [5000],  # default assumption
-        "needs_localhost_replacement": False
+        "needs_localhost_replacement": False,
+        **repo_structure # dependency_manifest_path, main_file_path
     }
 
-    # Check for Flask or Django in requirements.txt
-    req_txt = os.path.join(repo_path, "requirements.txt")
-    if os.path.isfile(req_txt):
-        with open(req_txt, "r") as f:
+    # Check for Flask or Django in requirements.txt / package.json
+    if os.path.isfile(results["dependency_manifest_path"]):
+        with open(results["dependency_manifest_path"], "r") as f:
             content = f.read().lower()
             if "django" in content:
                 results["framework"] = "django"
-                results["ports"] = [8000]
+                results["ports"] = [5000]
             elif "flask" in content:
                 results["framework"] = "flask"
                 results["ports"] = [5000]
-
-    # Check for Node.js frameworks in package.json
-    pkg_json = os.path.join(repo_path, "package.json")
-    if os.path.isfile(pkg_json):
-        with open(pkg_json, "r") as f:
-            content = f.read().lower()
-            if '"express"' in content or '"koa"' in content:
+            elif "express" in content:
                 results["framework"] = "nodejs"
-                results["ports"] = [3000]
+                results["ports"] = [5000]
 
     # Very naive check for 'localhost' references
-    for root, dirs, files in os.walk(repo_path):
-        for file in files:
-            if file.endswith((".py", ".js", ".ts", ".html")):
-                filepath = os.path.join(root, file)
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as code_file:
-                    code_text = code_file.read()
-                    if "localhost" in code_text:
-                        results["needs_localhost_replacement"] = True
-                        break
+    # Only check for localhost references in main file
+    if results["main_file_path"]:
+        main_file_fullpath = os.path.join(repo_path, repo_name, results["main_file_path"])
+        with open(main_file_fullpath, "r", encoding="utf-8", errors="ignore") as code_file:
+            code_text = code_file.read()
+            if "localhost" in code_text or "127.0.0.1" in code_text:
+                results["needs_localhost_replacement"] = True
 
     return results
 
@@ -208,27 +218,25 @@ output "private_key_pem" {{
     return tf_config
 
 def generate_user_data_script(framework: str) -> str:
-    """
-    Minimal user_data script that only installs system packages needed for
-    Python or Node apps. We no longer place a sample app here.
-    """
     if framework in ["flask", "django"]:
         return """#!/bin/bash
 set -e
 sudo apt-get update -y
 sudo apt-get install -y python3 python3-pip git
 """
+    elif framework == "nodejs":
+        return """#!/bin/bash
+set -e
+sudo apt-get update -y
+sudo apt-get install -y nodejs npm git
+"""
     else:
-        # Default: Just install Python for now
         return """#!/bin/bash
 set -e
 sudo apt-get update -y
 sudo apt-get install -y python3 python3-pip git
 """
 
-########################################
-# 4. RUN TERRAFORM APPLY
-########################################
 
 def run_terraform_apply(tf_config: str):
     tf_temp_dir = tempfile.mkdtemp(prefix="tf_")
@@ -262,7 +270,7 @@ def run_terraform_apply(tf_config: str):
     return public_ip, private_key
 
 
-def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool, framework: str, ssh_key: str = None):
+def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool, framework: str, ssh_key: str = None, root_dir: str = None, dependency_path: str = None, main_file_path: str = None):
     print(f"[INFO] Deploying application from {repo_path} to VM at IP {public_ip}...")
 
     if not ssh_key:
@@ -271,7 +279,7 @@ def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool
 
     # If code references 'localhost', do a naive replacement
     if needs_localhost_fix:
-        replace_localhost(repo_path, public_ip)
+        replace_localhost(repo_path, public_ip, main_file_path)
 
     # Use paramiko to SSH into the instance, copy code, install deps, and run the app
     username = "ubuntu"
@@ -297,7 +305,7 @@ def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool
 
         # make the app directory
         try:
-            sftp.mkdir(f"/home/{username}/app")
+            sftp.mkdir(f"/home/{username}/{root_dir}")
         except IOError:
             pass
     
@@ -306,7 +314,7 @@ def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool
             rel_path = os.path.relpath(root, repo_path)
             if rel_path == ".":
                 rel_path = ""
-            remote_dir = f"/home/{username}/app/{rel_path}"
+            remote_dir = f"/home/{username}/{root_dir}/{rel_path}"
             try:
                 sftp.stat(remote_dir)
             except IOError:
@@ -320,81 +328,123 @@ def deploy_application(public_ip: str, repo_path: str, needs_localhost_fix: bool
 
         sftp.close()
 
-        # Now install dependencies and start the app, depending on the framework
-        print("[INFO] Checking for requirements.txt...")
-        stdin, stdout, stderr = ssh.exec_command(f"test -f /home/{username}/app/app/requirements.txt && echo 'YES' || echo 'NO'")
-        has_requirements = stdout.read().decode().strip()
-        print(f"[INFO] requirements.txt present: {has_requirements}")
-
-        # Check if pip is installed with retries
-        max_retries = 3
-        retry_delay = 5
-        
-        for attempt in range(max_retries):
+        if framework.lower() in ["flask", "django"]:
+            wait_for_apt_lock_release(ssh)
+            
             stdin, stdout, stderr = ssh.exec_command("which pip3")
-            if stdout.channel.recv_exit_status() == 0:
-                break
+            if stdout.channel.recv_exit_status() != 0:
+                stdin, stdout, stderr = ssh.exec_command("sudo apt-get install -y python3-pip")
+                if stdout.channel.recv_exit_status() != 0:
+                    print(stderr.read().decode())
+                    return
             
-            print(f"[INFO] Installing pip (attempt {attempt + 1}/{max_retries})...")
-            stdin, stdout, stderr = ssh.exec_command("sudo apt-get install -y python3-pip")
-            if stdout.channel.recv_exit_status() == 0:
-                break
-            
-            if attempt < max_retries - 1:
-                print(f"[INFO] Waiting {retry_delay} seconds before retrying...")
-                time.sleep(retry_delay)
-            else:
-                print("[ERROR] Failed to install pip after all attempts:")
-                print(stderr.read().decode())
-                return
-            
-        
-        if has_requirements == "YES":
-            print("[INFO] Installing Python dependencies...")
-            stdin, stdout, stderr = ssh.exec_command(f"sudo python3 -m pip install -r /home/{username}/app/app/requirements.txt")
+            print(f"trying to install from /home/{username}/{root_dir}/{dependency_path}")
+            stdin, stdout, stderr = ssh.exec_command(f"sudo python3 -m pip install -r /home/{username}/{root_dir}/{dependency_path}")
             # Wait for command to complete and check output
             exit_status = stdout.channel.recv_exit_status()
             if exit_status != 0:
-                print("[ERROR] Failed to install requirements:")
                 print(stderr.read().decode())
-            else:
-                print("[INFO] Successfully installed requirements")
 
-        print("[INFO] Checking installed packages...")
-        stdin, stdout, stderr = ssh.exec_command("sudo python3 -m pip freeze")
-        print("[INFO] Installed packages:")
-        print("pip:",stdout.read().decode())
+            stdin, stdout, stderr = ssh.exec_command("sudo python3 -m pip freeze")
+            print("pip:",stdout.read().decode())
 
-        print("[INFO] Starting the application...")
-        stdin, stdout, stderr = ssh.exec_command(f"cd /home/{username}/app/app && nohup python3 app.py > app.log 2>&1 &")
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            print("[ERROR] Failed to start application:")
-            print(stderr.read().decode())
-        else:
-            print("[INFO] Application started successfully")
+            stdin, stdout, stderr = ssh.exec_command(f"nohup python3 /home/{username}/{root_dir}/{main_file_path} > app.log 2>&1 &")
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                print(stderr.read().decode())
 
-        # Check if the application is running
-        stdin, stdout, stderr = ssh.exec_command("ps aux | grep python3")
-        print("[INFO] Process status:")
-        print(stdout.read().decode())
+            # Check if the application is running
+            stdin, stdout, stderr = ssh.exec_command("ps aux | grep python3")
+            print(stdout.read().decode())
 
+        elif framework.lower() == "nodejs":
+            wait_for_apt_lock_release(ssh)
+            
+            _, stdout, stderr = ssh.exec_command("which npm")
+            npm_path = stdout.read().decode()
+            
+            if stdout.channel.recv_exit_status() != 0:
+                _, stdout, stderr = ssh.exec_command("sudo apt-get install -y nodejs npm")
+                install_output = stdout.read().decode()
+                install_error = stderr.read().decode()
+            if stdout.channel.recv_exit_status() != 0:
+                print(install_error)
+                return
+
+            _, stdout, _ = ssh.exec_command("node --version")
+            _, stdout, _ = ssh.exec_command("npm --version")
+
+            cmd = f"cd /home/{username}/{root_dir} && npm install"
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            npm_install_output = stdout.read().decode()
+            npm_install_error = stderr.read().decode()
+            
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                print(npm_install_error)
+
+            _, stdout, _ = ssh.exec_command(f"cat /home/{username}/{root_dir}/package.json")
+
+            cmd = f"cd /home/{username}/{root_dir} && nohup npm start > app.log 2>&1 < /dev/null & disown"
+
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            
         ssh.close()
-        print("[INFO] SSH connection closed")
 
     except Exception as e:
         print(f"[ERROR] Deployment failed: {e}")
 
 
-def replace_localhost(repo_path: str, public_ip: str):
-    print(f"[INFO] Replacing 'localhost' references with {public_ip} in repo files...")
-    for root, dirs, files in os.walk(repo_path):
-        for file in files:
-            if file.endswith((".py", ".js", ".ts", ".html")):
-                filepath = os.path.join(root, file)
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                new_content = re.sub(r"localhost", public_ip, content)
-                new_content = re.sub(r"127.0.0.1", '0.0.0.0', new_content)
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(new_content)
+def replace_localhost(repo_path: str, public_ip: str, main_file_path: str):
+    print(f"[INFO] Replacing 'localhost' references with {public_ip} in main file...")
+    filepath = os.path.join(repo_path, main_file_path)
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        new_content = re.sub(r"localhost", public_ip, content)
+        new_content = re.sub(r"127.0.0.1", '0.0.0.0', new_content)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except Exception as e:
+        print(f"[WARNING] Could not process {filepath}: {str(e)}")
+
+def tree(dir_path, prefix="") -> str:
+    # Get the list of entries in the directory
+    entries = sorted(os.listdir(dir_path))
+    entries_count = len(entries)
+    result = []
+    
+    for index, entry in enumerate(entries):
+        path = os.path.join(dir_path, entry)
+        connector = "├── " if index < entries_count - 1 else "└── "
+        result.append(prefix + connector + entry)
+        
+        if os.path.isdir(path):
+            extension = "│   " if index < entries_count - 1 else "    "
+            result.append(tree(path, prefix + extension))
+            
+    return "\n".join(result)
+
+def wait_for_apt_lock_release(ssh_client, max_retries=10, delay=10):
+    for attempt in range(1, max_retries + 1):
+        cmd = "sudo lsof /var/lib/dpkg/lock-frontend"
+        stdin, stdout, stderr = ssh_client.exec_command(cmd)
+        
+        # Force reading both streams so they don't remain in buffers
+        exit_code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode().strip()
+        err = stderr.read().decode().strip()
+
+        if not out:
+            print("[INFO] dpkg lock is free. Proceeding.")
+            return
+
+        print(f"[WARN] dpkg lock is held by:\n{out}")
+        if err:
+            print(f"[WARN] stderr: {err}")
+        
+        if attempt < max_retries:
+            print(f"[INFO] Attempt {attempt}/{max_retries}. Retrying in {delay} seconds...")
+            time.sleep(delay)
+        else:
+            raise Exception("Still locked after all attempts; aborting.")

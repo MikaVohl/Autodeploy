@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simple Deploy App</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <h1>Simple Deploy App</h1>
+    <button id="fetch-button">Click Me</button>
+    <p id="response-message"></p>
+
+    <script>
+      document
+        .getElementById("fetch-button")
+        .addEventListener("click", async () => {
+          try {
+            const response = await fetch("http://localhost:5000/api/message");
+            const data = await response.json();
+            document.getElementById("response-message").textContent =
+              data.message;
+          } catch (error) {
+            document.getElementById("response-message").textContent =
+              "Error fetching message.";
+          }
+        });
+    </script>
+  </body>
+</html>
