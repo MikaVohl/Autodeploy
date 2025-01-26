@@ -20,9 +20,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Run the Flask application:
+4. Run the python application:
 ```bash
-flask run
+python app.py
 ```
 
 The application should now be running at `http://127.0.0.1:5000/`
